@@ -743,19 +743,38 @@ router.post('/start', authMiddleware, async (req, res) => {
 
     const transmissionId = result.insertId;
 
+    // Buscar servidor do usuário
+    const [serverRows] = await db.execute(
+      'SELECT servidor_id FROM folders WHERE user_id = ? LIMIT 1',
+      [userId]
+    );
+    const serverId = serverRows.length > 0 ? serverRows[0].servidor_id : 1;
+
     // Atualizar arquivo SMIL do usuário
     try {
-      const [serverRows] = await db.execute(
-        'SELECT servidor_id FROM folders WHERE user_id = ? LIMIT 1',
-        [userId]
-      );
-      const serverId = serverRows.length > 0 ? serverRows[0].servidor_id : 1;
-
       const PlaylistSMILService = require('../services/PlaylistSMILService');
       await PlaylistSMILService.updateUserSMIL(userId, userLogin, serverId);
       console.log(`✅ Arquivo SMIL atualizado para transmissão da playlist ${playlist_id}`);
     } catch (smilError) {
       console.warn('Erro ao atualizar arquivo SMIL:', smilError.message);
+    }
+
+    // Ligar aplicação Wowza usando comando JMX (seguindo padrão PHP)
+    try {
+      const startCommand = `/usr/bin/java -cp /usr/local/WowzaMediaServer JMXCommandLine -jmx service:jmx:rmi://localhost:8084/jndi/rmi://localhost:8085/jmxrmi -user admin -pass admin startAppInstance ${userLogin}`;
+
+      console.log(`🚀 Executando comando para ligar streaming: ${startCommand}`);
+
+      const startResult = await SSHManager.executeCommand(serverId, startCommand);
+
+      if (startResult.stdout && startResult.stdout.includes('ERROR')) {
+        console.warn('⚠️ Erro ao ligar aplicação Wowza, mas continuando:', startResult.stdout);
+      } else {
+        console.log(`✅ Aplicação Wowza ligada com sucesso para ${userLogin}`);
+      }
+    } catch (sshError) {
+      console.warn('⚠️ Erro ao ligar aplicação Wowza via SSH:', sshError.message);
+      // Continuar mesmo com erro SSH
     }
 
     // URLs do player
@@ -820,7 +839,7 @@ router.post('/stop', authMiddleware, async (req, res) => {
     if (stream_type === 'playlist' || !stream_type) {
       // Parar transmissão de playlist
       const [transmissionRows] = await db.execute(
-        `SELECT codigo FROM transmissoes 
+        `SELECT codigo FROM transmissoes
          WHERE (codigo_stm = ? OR codigo_stm IN (
            SELECT codigo FROM streamings WHERE codigo_cliente = ?
          )) AND status = "ativa"`,
@@ -829,6 +848,27 @@ router.post('/stop', authMiddleware, async (req, res) => {
 
       if (transmissionRows.length > 0) {
         const transmissionId = transmission_id || transmissionRows[0].codigo;
+
+        // Buscar dados do servidor para desligar o streaming via SSH
+        try {
+          const [serverRows] = await db.execute(
+            'SELECT servidor_id FROM folders WHERE user_id = ? LIMIT 1',
+            [userId]
+          );
+          const serverId = serverRows.length > 0 ? serverRows[0].servidor_id : 1;
+
+          // Desligar aplicação Wowza usando comando JMX (igual ao PHP)
+          const shutdownCommand = `/usr/bin/java -cp /usr/local/WowzaMediaServer JMXCommandLine -jmx service:jmx:rmi://localhost:8084/jndi/rmi://localhost:8085/jmxrmi -user admin -pass admin shutdownAppInstance ${userLogin}`;
+
+          console.log(`🛑 Executando comando para desligar streaming: ${shutdownCommand}`);
+
+          await SSHManager.executeCommand(serverId, shutdownCommand);
+
+          console.log(`✅ Aplicação Wowza desligada com sucesso para ${userLogin}`);
+        } catch (sshError) {
+          console.warn('⚠️ Erro ao desligar aplicação Wowza via SSH:', sshError.message);
+          // Continuar mesmo com erro SSH, pois pelo menos atualizamos o banco
+        }
 
         // Atualizar status da transmissão
         await db.execute(

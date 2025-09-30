@@ -290,15 +290,15 @@ const Playlists: React.FC = () => {
       const compatibleVideos = Array.isArray(data) ? data.filter((video: Video) => {
         // Verificar se é MP4
         const isMP4 = video.is_mp4 === true || video.formato_original?.toLowerCase() === 'mp4';
-        
+
         // Verificar se bitrate está dentro do limite do usuário
         const userBitrateLimit = user?.bitrate || 2500;
         const videoBitrate = video.bitrate_video || 0;
         const bitrateOk = videoBitrate === 0 || videoBitrate <= userBitrateLimit;
-        
-        // Verificar status de compatibilidade
-        const isCompatible = video.compativel === 'sim' || video.compativel === 'otimizado';
-        
+
+        // Verificar status de compatibilidade - aceitar vídeos otimizados, compatíveis ou sem flag
+        const isCompatible = !video.compativel || video.compativel === 'sim' || video.compativel === 'otimizado';
+
         return isMP4 && bitrateOk && isCompatible;
       }) : [];
       
